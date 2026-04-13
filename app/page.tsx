@@ -1,320 +1,261 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import SyncButton from '@/components/SyncButton';
-import AudioVisualizer from '@/components/AudioVisualizer';
 import VolumeSlider from '@/components/VolumeSlider';
-import { RadioBuffer } from '@/lib/radioBuffer';
-import { MicBuffer } from '@/lib/micBuffer';
-import { findSyncOffset } from '@/lib/audioSync';
-import type { AppState } from './types';
+import TapSync from '@/components/TapSync';
+import GameTimeline from '@/components/GameTimeline';
+import { AudioEngine } from '@/lib/audioEngine';
+import type { AppState, GameRouteResponse } from './types';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const SAMPLE_RATE = 4000;          // downsampled rate for correlation
-const RADIO_CLIP_SECS = 10;        // recent radio clip used for correlation
-const MIC_BUFFER_SECS = 60;        // how much mic (TV) audio to keep
-const RADIO_BUFFER_SECS = 60;      // how much radio audio to keep
-const PRE_SYNC_SECS = 15;          // seconds to buffer before first auto-sync
-const RESYNC_INTERVAL_MS = 3 * 60 * 1000; // re-sync every 3 minutes
-const CONFIDENCE_THRESHOLD = 0.15;
+type SyncTab = 'tap' | 'timeline';
+
+const EMPTY_GAME: GameRouteResponse = {
+  gamePk: null,
+  gameState: 'NoGame',
+  currentInning: 1,
+  currentInningOrdinal: '1st',
+  inningHalf: 'Top',
+  awayTeam: 'ATL',
+  homeTeam: '',
+  awayScore: 0,
+  homeScore: 0,
+  plays: [],
+};
 
 export default function Home() {
-  const [appState, setAppState] = useState<AppState>('ready');
-  const [delay, setDelay] = useState<number | null>(null);
-  const [volume, setVolume] = useState(0.8);
+  const [appState, setAppState] = useState<AppState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
-  const [bufferProgress, setBufferProgress] = useState(0);
+  const [volume, setVolume] = useState(0.8);
+  const [offset, setOffset] = useState<number | null>(null);
+  const [syncTab, setSyncTab] = useState<SyncTab>('tap');
+  const [gameData, setGameData] = useState<GameRouteResponse>(EMPTY_GAME);
+  const [gameLoading, setGameLoading] = useState(false);
 
-  // Refs that survive re-renders without triggering them
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const ctxRef = useRef<AudioContext | null>(null);
-  const gainRef = useRef<GainNode | null>(null);
-  const radioBufferRef = useRef<RadioBuffer | null>(null);
-  const micBufferRef = useRef<MicBuffer | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const resyncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const bufferTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Keep a stable ref to performSync so setInterval closures don't go stale
-  const performSyncRef = useRef<() => Promise<void>>(async () => {});
+  const engineRef = useRef<AudioEngine | null>(null);
 
-  // ─── Perform sync ─────────────────────────────────────────────────────────
-  const performSync = useCallback(async () => {
-    const radioBuffer = radioBufferRef.current;
-    const micBuffer = micBufferRef.current;
-    const audio = audioRef.current;
-    if (!radioBuffer || !micBuffer || !audio) return;
-
-    setAppState('syncing');
-
-    try {
-      const radioSamples = radioBuffer.getRecent(RADIO_CLIP_SECS * SAMPLE_RATE);
-      const micSamples = micBuffer.getAll();
-
-      if (radioSamples.length < RADIO_CLIP_SECS * SAMPLE_RATE * 0.5) {
-        setErrorMsg('Not enough radio audio buffered yet. Please wait a moment.');
-        setAppState('error');
-        return;
-      }
-      if (micSamples.length < RADIO_CLIP_SECS * SAMPLE_RATE) {
-        setErrorMsg('Not enough mic audio buffered yet. Please wait a moment.');
-        setAppState('error');
-        return;
-      }
-
-      const result = findSyncOffset(radioSamples, micSamples, SAMPLE_RATE);
-
-      if (result.confidence < CONFIDENCE_THRESHOLD) {
-        setErrorMsg(
-          "Couldn't find a match. Make sure the game is on TV with the volume up, then try again.",
-        );
-        setAppState('error');
-        return;
-      }
-
-      // Apply the offset by seeking the audio element
-      const target = audio.currentTime + result.offsetSeconds;
-      if (audio.seekable.length > 0) {
-        const seekEnd = audio.seekable.end(0);
-        audio.currentTime = Math.min(Math.max(0, target), seekEnd);
-      } else {
-        audio.currentTime = Math.max(0, target);
-      }
-
-      setDelay(result.offsetSeconds);
-      setAppState('synced');
-    } catch (err) {
-      console.error('[SyncCast] sync error', err);
-      setErrorMsg('Sync failed. Please try again.');
-      setAppState('error');
-    }
+  // ── Fetch game data ────────────────────────────────────────────────────────
+  const fetchGame = useCallback(() => {
+    setGameLoading(true);
+    fetch('/api/game')
+      .then((r) => r.json())
+      .then((data: GameRouteResponse) => { setGameData(data); })
+      .catch(() => {})
+      .finally(() => setGameLoading(false));
   }, []);
 
-  // Keep the ref current so interval callbacks use the latest version
   useEffect(() => {
-    performSyncRef.current = performSync;
-  }, [performSync]);
+    fetchGame();
+  }, [fetchGame]);
 
-  // ─── Tear-down ────────────────────────────────────────────────────────────
-  const teardown = useCallback(() => {
-    if (bufferTimerRef.current) {
-      clearInterval(bufferTimerRef.current);
-      bufferTimerRef.current = null;
-    }
-    if (resyncTimerRef.current) {
-      clearInterval(resyncTimerRef.current);
-      resyncTimerRef.current = null;
-    }
-    micStreamRef.current?.getTracks().forEach((t) => t.stop());
-    micStreamRef.current = null;
-    audioRef.current?.pause();
-    audioRef.current = null;
-    // Close the AudioContext so createMediaElementSource can be called fresh on retry
-    ctxRef.current?.close().catch(() => {});
-    ctxRef.current = null;
-    gainRef.current = null;
-    radioBufferRef.current = null;
-    micBufferRef.current = null;
-  }, []);
-
-  // ─── Start buffering ───────────────────────────────────────────────────────
-  const startBuffering = useCallback(async () => {
+  // ── Start radio ────────────────────────────────────────────────────────────
+  const startRadio = useCallback(async () => {
     setErrorMsg('');
-    setBufferProgress(0);
+    setOffset(null);
+    setAppState('starting');
+
+    if (!engineRef.current) {
+      engineRef.current = new AudioEngine();
+    }
 
     try {
-      // Always create a fresh AudioContext and Audio element.
-      // createMediaElementSource() can only be called once per <audio> element,
-      // so we must use a new element on every attempt.
-      const ctx = new AudioContext();
-      ctxRef.current = ctx;
-      await ctx.resume();
-
-      // ── Radio audio graph ──────────────────────────────────────────────────
-      const audio = new Audio();
-      audio.crossOrigin = 'anonymous';
-      audio.src = '/api/stream';
-      audio.setAttribute('playsinline', '');
-      audio.preload = 'none';
-      audioRef.current = audio;
-
-      const source = ctx.createMediaElementSource(audio);
-
-      const gain = ctx.createGain();
-      gain.gain.value = volume;
-      gainRef.current = gain;
-
-      const radioBuffer = new RadioBuffer(ctx, RADIO_BUFFER_SECS, SAMPLE_RATE);
-      radioBufferRef.current = radioBuffer;
-
-      // source → radioBuffer (ScriptProcessorNode) → gain → speakers
-      source.connect(radioBuffer.inputNode);
-      radioBuffer.outputNode.connect(gain);
-      gain.connect(ctx.destination);
-
-      // Verify the stream is actually reachable before committing
-      try {
-        await audio.play();
-      } catch (playErr) {
-        console.error('[SyncCast] stream play error', playErr);
-        throw new Error('StreamError');
-      }
-
-      // ── Mic audio graph ────────────────────────────────────────────────────
-      const micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-        video: false,
-      });
-      micStreamRef.current = micStream;
-
-      const micSource = ctx.createMediaStreamSource(micStream);
-      const micBuffer = new MicBuffer(ctx, MIC_BUFFER_SECS, SAMPLE_RATE);
-      micBufferRef.current = micBuffer;
-
-      // Mic output must connect to destination (even silenced) to keep processor active
-      const silentGain = ctx.createGain();
-      silentGain.gain.value = 0;
-      silentGain.connect(ctx.destination);
-
-      micSource.connect(micBuffer.inputNode);
-      micBuffer.outputNode.connect(silentGain);
-
-      // ── Buffer progress ticker ─────────────────────────────────────────────
-      setAppState('buffering');
-      let elapsed = 0;
-      bufferTimerRef.current = setInterval(() => {
-        elapsed += 1;
-        setBufferProgress(Math.min(100, (elapsed / PRE_SYNC_SECS) * 100));
-        if (elapsed >= PRE_SYNC_SECS) {
-          clearInterval(bufferTimerRef.current!);
-          bufferTimerRef.current = null;
-          performSyncRef.current();
-        }
-      }, 1000);
+      await engineRef.current.start('/api/stream', volume);
+      setAppState('streaming');
     } catch (err: unknown) {
       console.error('[SyncCast] start error', err);
-      teardown();
-      if (err instanceof Error && err.name === 'NotAllowedError') {
-        setErrorMsg('Microphone access denied. Please allow mic access and try again.');
-      } else if (err instanceof Error && err.message === 'StreamError') {
-        setErrorMsg('Radio stream unavailable. The game may not be on or the stream URL has changed.');
-      } else {
-        setErrorMsg('Failed to start. Check your internet connection and try again.');
-      }
+      engineRef.current?.teardown();
+      setErrorMsg('Failed to start stream. Check your internet connection.');
       setAppState('error');
     }
-  }, [volume, teardown]);
+  }, [volume]);
 
-  // ─── Button handler ────────────────────────────────────────────────────────
-  const handleSyncClick = useCallback(() => {
-    if (appState === 'ready' || appState === 'error') {
-      startBuffering();
-    } else if (appState === 'synced') {
-      performSync();
-    }
-  }, [appState, startBuffering, performSync]);
+  // ── Apply sync offset ──────────────────────────────────────────────────────
+  const applySync = useCallback((offsetSeconds: number) => {
+    engineRef.current?.applyOffset(offsetSeconds);
+    setOffset(offsetSeconds);
+    setAppState('synced');
+  }, []);
 
+  // ── Volume change ──────────────────────────────────────────────────────────
+  const handleVolumeChange = useCallback((v: number) => {
+    setVolume(v);
+    engineRef.current?.setVolume(v);
+  }, []);
+
+  // ── Stop ──────────────────────────────────────────────────────────────────
   const handleStop = useCallback(() => {
-    teardown();
-    setAppState('ready');
-    setDelay(null);
-    setBufferProgress(0);
-  }, [teardown]);
+    engineRef.current?.teardown();
+    setAppState('idle');
+    setOffset(null);
+  }, []);
 
-  const handleVolumeChange = useCallback(
-    (v: number) => {
-      setVolume(v);
-      if (gainRef.current) gainRef.current.gain.value = v;
-    },
-    [],
-  );
+  // ── Re-sync (go back to sync panel) ───────────────────────────────────────
+  const handleResync = useCallback(() => {
+    // Keep radio playing, just reset to sync selection
+    engineRef.current?.applyOffset(0);
+    setOffset(null);
+    setAppState('streaming');
+  }, []);
 
-  // ─── Auto re-sync every 3 minutes once synced ──────────────────────────────
-  useEffect(() => {
-    if (appState !== 'synced') return;
-    resyncTimerRef.current = setInterval(() => {
-      performSyncRef.current();
-    }, RESYNC_INTERVAL_MS);
-    return () => {
-      if (resyncTimerRef.current) clearInterval(resyncTimerRef.current);
-    };
-  }, [appState]);
-
-  // ─── Wake lock — keep screen on while listening / synced ───────────────────
-  useEffect(() => {
-    if (appState !== 'buffering' && appState !== 'synced') return;
-    let wakeLock: WakeLockSentinel | null = null;
-    (navigator as Navigator & { wakeLock?: WakeLock }).wakeLock
-      ?.request('screen')
-      .then((lock) => { wakeLock = lock; })
-      .catch(() => {/* no-op — wake lock not supported or permission denied */});
-    return () => { wakeLock?.release().catch(() => {}); };
-  }, [appState]);
-
-  // ─── Status text ──────────────────────────────────────────────────────────
-  const statusText: Record<AppState, string> = {
-    ready: 'Tap Sync to start',
-    buffering: `Listening to your TV... (${Math.round(bufferProgress)}%)`,
-    syncing: 'Calculating delay…',
-    synced:
-      delay !== null
-        ? `Synced! Offset: ${delay > 0 ? '+' : ''}${delay.toFixed(1)}s`
-        : 'Synced!',
-    error: errorMsg || 'Something went wrong.',
-  };
-
-  const statusColor: Record<AppState, string> = {
-    ready: 'text-slate-400',
-    buffering: 'text-yellow-300',
-    syncing: 'text-yellow-300',
-    synced: 'text-green-400',
-    error: 'text-red-400',
-  };
+  const isActive = appState === 'streaming' || appState === 'synced';
 
   return (
     <main
-      className="min-h-screen flex flex-col items-center justify-center gap-10 px-6 py-12 select-none"
+      className="min-h-screen flex flex-col items-center gap-6 px-4 py-8 select-none"
       style={{ background: '#0a1628' }}
     >
       {/* Header */}
       <div className="text-center space-y-1">
         <div className="flex items-center justify-center gap-2">
-          <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-          <span className="text-red-400 text-xs font-semibold tracking-widest uppercase">Live</span>
+          <span className={`inline-block w-2 h-2 rounded-full bg-red-500 ${isActive ? 'animate-pulse' : 'opacity-40'}`} />
+          <span className={`text-xs font-semibold tracking-widest uppercase ${isActive ? 'text-red-400' : 'text-slate-600'}`}>
+            {isActive ? 'Live' : 'Off'}
+          </span>
         </div>
         <h1 className="text-white text-5xl font-extrabold tracking-tight">SyncCast</h1>
         <p className="text-slate-400 text-sm">680 the Fan · Atlanta Braves</p>
       </div>
 
-      {/* Sync button */}
-      <SyncButton state={appState} progress={bufferProgress} onClick={handleSyncClick} />
-
-      {/* Waveform animation during listening */}
-      <AudioVisualizer active={appState === 'buffering'} />
-
-      {/* Status */}
-      <p className={`text-sm text-center max-w-xs ${statusColor[appState]}`}>
-        {statusText[appState]}
-      </p>
-
-      {/* Volume control */}
-      <VolumeSlider value={volume} onChange={handleVolumeChange} />
-
-      {/* Stop button — shown when active */}
-      {(appState === 'buffering' || appState === 'syncing' || appState === 'synced') && (
-        <button
-          onClick={handleStop}
-          className="text-slate-500 text-sm underline underline-offset-2 hover:text-slate-300 transition-colors"
-        >
-          Stop
-        </button>
+      {/* Game score bar */}
+      {gameData.gameState !== 'NoGame' && gameData.homeTeam && (
+        <div className="flex items-center gap-3 px-4 py-2 rounded-full bg-slate-800/60 border border-slate-700 text-sm">
+          <span className="text-slate-300 font-medium">{gameData.awayTeam}</span>
+          <span className="text-white font-bold tabular-nums">
+            {gameData.awayScore} – {gameData.homeScore}
+          </span>
+          <span className="text-slate-300 font-medium">{gameData.homeTeam}</span>
+          {gameData.gameState === 'Live' && (
+            <span className="text-slate-500 text-xs ml-1">
+              {gameData.inningHalf === 'Top' ? '▲' : '▼'}{gameData.currentInningOrdinal}
+            </span>
+          )}
+          {gameData.gameState === 'Final' && (
+            <span className="text-slate-500 text-xs ml-1">Final</span>
+          )}
+        </div>
       )}
 
-      {/* Hidden audio element */}
-      <audio ref={audioRef} playsInline />
+      {/* ── Idle / Error ── */}
+      {(appState === 'idle' || appState === 'error') && (
+        <div className="flex flex-col items-center gap-4">
+          <button
+            onClick={startRadio}
+            className="relative flex items-center justify-center focus:outline-none group"
+          >
+            <span className="relative flex items-center justify-center w-40 h-40 rounded-full border-4 border-blue-500 bg-[#0d1f3c] group-active:scale-95 transition-all duration-300 cursor-pointer">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-10 h-10 mb-1 text-blue-400">
+                <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z" />
+                <path d="M19 10a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V19H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.08A7 7 0 0 0 19 10z" />
+              </svg>
+              <span className="text-xs font-bold tracking-widest text-blue-400">
+                {appState === 'error' ? 'TRY AGAIN' : 'START RADIO'}
+              </span>
+            </span>
+          </button>
+          {errorMsg && (
+            <p className="text-red-400 text-sm text-center max-w-xs">{errorMsg}</p>
+          )}
+        </div>
+      )}
+
+      {/* ── Starting ── */}
+      {appState === 'starting' && (
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-40 h-40 rounded-full border-4 border-yellow-400 bg-[#0d1f3c] flex flex-col items-center justify-center gap-1 animate-pulse">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-10 h-10 mb-1 text-yellow-400">
+              <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z" />
+              <path d="M19 10a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V19H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.08A7 7 0 0 0 19 10z" />
+            </svg>
+            <span className="text-xs font-bold tracking-widest text-yellow-400">CONNECTING</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Streaming — sync panel ── */}
+      {appState === 'streaming' && (
+        <div className="w-full max-w-sm flex flex-col gap-4">
+          <p className="text-center text-slate-300 text-sm font-medium">
+            Radio is playing. Choose a sync method:
+          </p>
+
+          {/* Tab picker */}
+          <div className="flex rounded-xl overflow-hidden border border-slate-700">
+            <button
+              onClick={() => setSyncTab('tap')}
+              className={`flex-1 py-2.5 text-xs font-bold tracking-wider uppercase transition-colors ${
+                syncTab === 'tap'
+                  ? 'bg-slate-700 text-white'
+                  : 'bg-slate-800/40 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              Tap Sync
+            </button>
+            <button
+              onClick={() => {
+                setSyncTab('timeline');
+                if (gameData.plays.length === 0 && gameData.gameState !== 'NoGame') fetchGame();
+              }}
+              className={`flex-1 py-2.5 text-xs font-bold tracking-wider uppercase transition-colors ${
+                syncTab === 'timeline'
+                  ? 'bg-slate-700 text-white'
+                  : 'bg-slate-800/40 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              Game Timeline
+            </button>
+          </div>
+
+          {/* Tab content */}
+          {syncTab === 'tap' && <TapSync onSync={applySync} />}
+          {syncTab === 'timeline' && (
+            gameLoading
+              ? <p className="text-center text-slate-500 text-sm py-8">Loading game data…</p>
+              : <GameTimeline game={gameData} onSync={applySync} />
+          )}
+        </div>
+      )}
+
+      {/* ── Synced ── */}
+      {appState === 'synced' && offset !== null && (
+        <div className="w-full max-w-sm flex flex-col items-center gap-4">
+          <div className="flex flex-col items-center gap-2 px-6 py-5 rounded-2xl border border-green-700/50 bg-green-900/20 w-full">
+            <span className="text-green-400 text-lg">✓ Synced</span>
+            <span className="text-slate-300 text-sm">
+              {offset >= 0
+                ? <>Radio delayed by <span className="text-white font-semibold">{offset.toFixed(1)}s</span></>
+                : <>Radio advanced by <span className="text-white font-semibold">{Math.abs(offset).toFixed(1)}s</span></>
+              }
+            </span>
+          </div>
+
+          <div className="flex gap-3 w-full">
+            <button
+              onClick={handleResync}
+              className="flex-1 py-2.5 rounded-xl border border-slate-600 text-slate-300 text-sm font-medium hover:text-white hover:border-slate-400 transition-colors"
+            >
+              Re-Sync
+            </button>
+            <button
+              onClick={() => { handleResync(); setSyncTab('tap'); }}
+              className="flex-1 py-2.5 rounded-xl border border-sky-700 text-sky-400 text-sm font-medium hover:bg-sky-900/20 transition-colors"
+            >
+              Fine-tune (Tap)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Volume + Stop (shown while radio is on) ── */}
+      {isActive && (
+        <div className="w-full max-w-sm flex flex-col gap-3">
+          <VolumeSlider value={volume} onChange={handleVolumeChange} />
+          <button
+            onClick={handleStop}
+            className="text-slate-600 text-sm underline underline-offset-2 hover:text-slate-400 transition-colors text-center"
+          >
+            Stop radio
+          </button>
+        </div>
+      )}
     </main>
   );
 }
