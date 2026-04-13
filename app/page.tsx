@@ -63,7 +63,17 @@ export default function Home() {
     } catch (err: unknown) {
       console.error('[SyncCast] start error', err);
       engineRef.current?.teardown();
-      setErrorMsg('Failed to start stream. Check your internet connection.');
+      const name = err instanceof Error ? err.name : '';
+      const msg = err instanceof Error ? err.message : String(err);
+      if (name === 'NotAllowedError') {
+        setErrorMsg('Playback blocked. Tap the button again to start.');
+      } else if (name === 'NotSupportedError') {
+        setErrorMsg(`Audio format not supported: ${msg}`);
+      } else if (name === 'AbortError') {
+        setErrorMsg('Playback was interrupted. Tap to try again.');
+      } else {
+        setErrorMsg(`Failed to start (${name || 'error'}: ${msg})`);
+      }
       setAppState('error');
     }
   }, [volume]);

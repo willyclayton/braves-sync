@@ -20,22 +20,24 @@ export class AudioEngine {
   async start(streamUrl: string, volume: number): Promise<void> {
     this.teardown();
 
-    // AudioContext must be created and resumed within a user-gesture call stack (iOS Safari)
+    // Create AudioContext synchronously within the user-gesture call stack.
+    // Don't await resume() — iOS Safari considers the gesture stale after awaits,
+    // and the context is already running when freshly created inside a gesture.
     const ctx = new AudioContext();
     this.ctx = ctx;
-    await ctx.resume();
+    ctx.resume().catch(() => {}); // fire-and-forget; needed if ctx starts suspended
 
     const audio = new Audio();
     audio.crossOrigin = 'anonymous';
     audio.src = streamUrl;
     audio.setAttribute('playsinline', '');
-    audio.preload = 'none';
     this.audio = audio;
 
+    // Build the audio graph before calling play() so routing is in place.
     const source = ctx.createMediaElementSource(audio);
 
-    // Declare 180-second max at construction time — DelayNode clips silently if not set
-    const delayNode = ctx.createDelay(180);
+    // 120-second max delay (spec: must be strictly less than 180).
+    const delayNode = ctx.createDelay(120);
     delayNode.delayTime.value = 0;
     this.delayNode = delayNode;
 
@@ -47,6 +49,7 @@ export class AudioEngine {
     delayNode.connect(gainNode);
     gainNode.connect(ctx.destination);
 
+    // play() must be called while still within the user-gesture activation context.
     await audio.play();
   }
 
