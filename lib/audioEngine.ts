@@ -2,6 +2,7 @@
  * AudioEngine — manages the Web Audio graph for SyncCast.
  *
  * Graph:  Audio() → MediaElementSourceNode → DelayNode(180s) → GainNode → destination
+ *                                         ↘ AnalyserNode (parallel tap, no output)
  *
  * Sync is applied via DelayNode.delayTime (positive offsets = TV behind radio)
  * or by seeking the audio element forward (negative offsets = radio behind TV).
@@ -14,6 +15,9 @@ export class AudioEngine {
   private audio: HTMLAudioElement | null = null;
   private delayNode: DelayNode | null = null;
   private gainNode: GainNode | null = null;
+  private analyserNode: AnalyserNode | null = null;
+  private samplingInterval: ReturnType<typeof setInterval> | null = null;
+  private transientBuffer: Array<{ time: number; peak: number }> = [];
   private currentOffset = 0;
 
   /** Start the radio stream. Tears down any running graph first. */
@@ -48,6 +52,31 @@ export class AudioEngine {
     source.connect(delayNode);
     delayNode.connect(gainNode);
     gainNode.connect(ctx.destination);
+
+    // Parallel analyser tap for transient detection (doesn't affect output).
+    const analyserNode = ctx.createAnalyser();
+    analyserNode.fftSize = 256;
+    source.connect(analyserNode);
+    this.analyserNode = analyserNode;
+
+    // Sample peak amplitude at ~20 Hz (every 50 ms).
+    this.samplingInterval = setInterval(() => {
+      if (!this.analyserNode) return;
+      const data = new Uint8Array(this.analyserNode.frequencyBinCount);
+      this.analyserNode.getByteTimeDomainData(data);
+      let peak = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = Math.abs(data[i] - 128);
+        if (v > peak) peak = v;
+      }
+      const now = Date.now();
+      this.transientBuffer.push({ time: now, peak });
+      // Keep only the last 90 seconds.
+      const cutoff = now - 90_000;
+      while (this.transientBuffer.length > 0 && this.transientBuffer[0].time < cutoff) {
+        this.transientBuffer.shift();
+      }
+    }, 50);
 
     // play() must be called while still within the user-gesture activation context.
     await audio.play();
@@ -88,7 +117,53 @@ export class AudioEngine {
     return this.currentOffset;
   }
 
+  /**
+   * Find the most prominent transient (e.g. ball hitting catcher's mitt) near targetTime.
+   *
+   * Searches from (targetTime - lookbackMs) to (targetTime + lookaheadMs).
+   * A transient is a sample whose peak is ≥ 30/128 AND at least 1.8× the rolling
+   * average of the prior 4 samples.
+   *
+   * Returns the timestamp (ms) of the candidate closest to targetTime, or null if
+   * none found.
+   */
+  findTransientNear(
+    targetTime: number,
+    lookbackMs = 30_000,
+    lookaheadMs = 0,
+  ): number | null {
+    const windowStart = targetTime - lookbackMs;
+    const windowEnd = targetTime + lookaheadMs;
+    const slice = this.transientBuffer.filter(
+      (s) => s.time >= windowStart && s.time <= windowEnd,
+    );
+    if (slice.length < 6) return null;
+
+    const candidates: Array<{ time: number }> = [];
+    for (let i = 4; i < slice.length; i++) {
+      const baseline =
+        (slice[i - 1].peak + slice[i - 2].peak + slice[i - 3].peak + slice[i - 4].peak) / 4;
+      const peak = slice[i].peak;
+      const rise = peak - baseline;
+      if (peak >= 30 && rise >= 15 && peak > baseline * 1.5) {
+        candidates.push({ time: slice[i].time });
+      }
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Return the candidate closest to targetTime.
+    candidates.sort((a, b) => Math.abs(a.time - targetTime) - Math.abs(b.time - targetTime));
+    return candidates[0].time;
+  }
+
   teardown(): void {
+    if (this.samplingInterval !== null) {
+      clearInterval(this.samplingInterval);
+      this.samplingInterval = null;
+    }
+    this.analyserNode = null;
+    this.transientBuffer = [];
     this.audio?.pause();
     this.audio = null;
     this.ctx?.close().catch(() => {});

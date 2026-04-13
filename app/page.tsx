@@ -4,8 +4,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import VolumeSlider from '@/components/VolumeSlider';
 import TapSync from '@/components/TapSync';
 import GameTimeline from '@/components/GameTimeline';
+import PitchSync from '@/components/PitchSync';
 import { AudioEngine } from '@/lib/audioEngine';
-import type { AppState, GameRouteResponse } from './types';
+import type { AppState, GameRouteResponse, PlaySummary, PitchSummary } from './types';
 
 type SyncTab = 'tap' | 'timeline';
 
@@ -30,6 +31,7 @@ export default function Home() {
   const [syncTab, setSyncTab] = useState<SyncTab>('tap');
   const [gameData, setGameData] = useState<GameRouteResponse>(EMPTY_GAME);
   const [gameLoading, setGameLoading] = useState(false);
+  const [pitchSyncTarget, setPitchSyncTarget] = useState<{ play: PlaySummary; pitch: PitchSummary } | null>(null);
 
   const engineRef = useRef<AudioEngine | null>(null);
 
@@ -226,7 +228,11 @@ export default function Home() {
           {syncTab === 'timeline' && (
             gameLoading
               ? <p className="text-center text-slate-500 text-sm py-8">Loading game data…</p>
-              : <GameTimeline game={gameData} onSync={applySync} />
+              : <GameTimeline
+                  game={gameData}
+                  onSync={applySync}
+                  onPitchSync={(play, pitch) => setPitchSyncTarget({ play, pitch })}
+                />
           )}
         </div>
       )}
@@ -250,7 +256,7 @@ export default function Home() {
           <div className="flex flex-col gap-2">
             <input
               type="range"
-              min={-30}
+              min={-120}
               max={120}
               step={0.1}
               value={offset}
@@ -259,9 +265,9 @@ export default function Home() {
               aria-label="Sync offset"
             />
             <div className="flex justify-between text-xs text-slate-600">
-              <span>−30s</span>
+              <span>−2min</span>
               <span>0</span>
-              <span>+120s</span>
+              <span>+2min</span>
             </div>
           </div>
 
@@ -307,6 +313,20 @@ export default function Home() {
             Stop radio
           </button>
         </div>
+      )}
+
+      {/* ── Pitch Sync overlay ── */}
+      {pitchSyncTarget && (
+        <PitchSync
+          play={pitchSyncTarget.play}
+          pitch={pitchSyncTarget.pitch}
+          audioEngine={engineRef.current}
+          onApply={(offsetSeconds) => {
+            setPitchSyncTarget(null);
+            applySync(offsetSeconds);
+          }}
+          onCancel={() => setPitchSyncTarget(null)}
+        />
       )}
     </main>
   );

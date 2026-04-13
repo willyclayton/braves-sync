@@ -6,6 +6,7 @@ import type { PlaySummary, PitchSummary, GameRouteResponse } from '@/app/types';
 interface Props {
   game: GameRouteResponse;
   onSync: (offsetSeconds: number) => void;
+  onPitchSync?: (play: PlaySummary, pitch: PitchSummary) => void;
 }
 
 const ORDINALS: Record<number, string> = {
@@ -44,7 +45,7 @@ interface InningGroup {
   plays: PlaySummary[];
 }
 
-export default function GameTimeline({ game, onSync }: Props) {
+export default function GameTimeline({ game, onSync, onPitchSync }: Props) {
   const [selected, setSelected] = useState<Selection | null>(null);
   const [expandedPlays, setExpandedPlays] = useState<Set<number>>(new Set());
   const [expandedInnings, setExpandedInnings] = useState<Set<string>>(new Set());
@@ -219,39 +220,54 @@ export default function GameTimeline({ game, onSync }: Props) {
                         selected.pitch.pitchNumber === pitch.pitchNumber;
 
                       return (
-                        <button
+                        <div
                           key={pitch.pitchNumber}
-                          onClick={() => setSelected({ type: 'pitch', play, pitch })}
                           className={`
-                            w-full text-left pl-10 pr-4 py-2 flex items-center gap-3
-                            border-l-2 transition-colors
+                            flex items-center border-l-2 transition-colors
                             ${isPitchSelected
                               ? 'border-sky-400 bg-sky-900/20'
                               : 'border-transparent hover:bg-slate-700/20'}
                           `}
                         >
-                          {/* Pitch dot */}
-                          <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${pitchDotColor(pitch)}`} />
+                          {/* Pitch info (tap to select) */}
+                          <button
+                            onClick={() => setSelected({ type: 'pitch', play, pitch })}
+                            className="flex-1 text-left pl-10 pr-2 py-2 flex items-center gap-3"
+                          >
+                            {/* Pitch dot */}
+                            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${pitchDotColor(pitch)}`} />
 
-                          {/* Pitch label: P3 · 1-2 · Called Strike */}
-                          <span className="text-xs text-slate-500 flex-shrink-0 tabular-nums w-5">
-                            P{pitch.pitchNumber}
-                          </span>
-                          <span className={`text-xs font-mono flex-shrink-0 tabular-nums ${
-                            isPitchSelected ? 'text-sky-300' : 'text-slate-400'
-                          }`}>
-                            {pitch.balls}-{pitch.strikes}
-                          </span>
-                          <span className={`text-xs flex-1 truncate ${
-                            isPitchSelected ? 'text-sky-200' : 'text-slate-400'
-                          }`}>
-                            {pitch.description}
-                          </span>
-                          <span className="text-xs text-slate-700 flex-shrink-0">
-                            {formatTime(pitch.startTime)}
-                          </span>
-                          {isPitchSelected && <span className="text-sky-400 text-xs flex-shrink-0">✓</span>}
-                        </button>
+                            {/* Pitch label: P3 · 1-2 · Called Strike */}
+                            <span className="text-xs text-slate-500 flex-shrink-0 tabular-nums w-5">
+                              P{pitch.pitchNumber}
+                            </span>
+                            <span className={`text-xs font-mono flex-shrink-0 tabular-nums ${
+                              isPitchSelected ? 'text-sky-300' : 'text-slate-400'
+                            }`}>
+                              {pitch.balls}-{pitch.strikes}
+                            </span>
+                            <span className={`text-xs flex-1 truncate ${
+                              isPitchSelected ? 'text-sky-200' : 'text-slate-400'
+                            }`}>
+                              {pitch.description}
+                            </span>
+                            <span className="text-xs text-slate-700 flex-shrink-0">
+                              {formatTime(pitch.startTime)}
+                            </span>
+                            {isPitchSelected && <span className="text-sky-400 text-xs flex-shrink-0">✓</span>}
+                          </button>
+
+                          {/* Precise sync button */}
+                          {onPitchSync && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); onPitchSync(play, pitch); }}
+                              className="px-3 py-2 text-xs font-bold text-blue-400 hover:text-blue-300 hover:bg-blue-900/20 transition-colors flex-shrink-0 border-l border-slate-800/60"
+                              title="Sync to this pitch"
+                            >
+                              SYNC
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
