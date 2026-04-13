@@ -89,26 +89,36 @@ export class AudioEngine {
   /**
    * Apply a sync offset.
    *  offsetSeconds > 0 → TV is behind radio → delay radio output by that amount
-   *  offsetSeconds < 0 → Radio is behind TV  → seek audio forward by |offset|
+   *  offsetSeconds < 0 → Radio is behind TV  → seek or reconnect to live edge
+   *
+   * Uses setValueAtTime so the delay change is immediate with no interpolation.
    */
   applyOffset(offsetSeconds: number): void {
     this.currentOffset = offsetSeconds;
 
     if (offsetSeconds >= 0) {
-      if (this.delayNode) {
-        this.delayNode.delayTime.value = Math.min(offsetSeconds, 170);
+      if (this.delayNode && this.ctx) {
+        const clampedDelay = Math.min(offsetSeconds, 119); // safely under maxDelay=120
+        this.delayNode.delayTime.cancelScheduledValues(this.ctx.currentTime);
+        this.delayNode.delayTime.setValueAtTime(clampedDelay, this.ctx.currentTime);
       }
     } else {
-      // Reset delay, seek audio forward instead
-      if (this.delayNode) this.delayNode.delayTime.value = 0;
+      // Need to advance radio ahead of its current position.
+      if (this.delayNode && this.ctx) {
+        this.delayNode.delayTime.cancelScheduledValues(this.ctx.currentTime);
+        this.delayNode.delayTime.setValueAtTime(0, this.ctx.currentTime);
+      }
       const audio = this.audio;
       if (audio) {
-        const target = audio.currentTime + Math.abs(offsetSeconds);
-        const seekTo =
-          audio.seekable.length > 0
-            ? Math.min(target, audio.seekable.end(0))
-            : target;
-        audio.currentTime = seekTo;
+        if (audio.seekable.length > 0) {
+          // Seekable (HLS) — jump forward toward the live edge.
+          const target = audio.currentTime + Math.abs(offsetSeconds);
+          audio.currentTime = Math.min(target, audio.seekable.end(0));
+        } else {
+          // Plain live HTTP stream — not seekable. Reconnect to get the live edge.
+          audio.load();
+          audio.play().catch(() => {});
+        }
       }
     }
   }

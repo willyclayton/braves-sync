@@ -27,7 +27,8 @@ export default function Home() {
   const [appState, setAppState] = useState<AppState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [volume, setVolume] = useState(0.8);
-  const [offset, setOffset] = useState<number | null>(null);
+  const [offset, setOffset] = useState<number | null>(null);       // currently applied
+  const [scrubberOffset, setScrubberOffset] = useState(0);         // scrubber preview
   const [syncTab, setSyncTab] = useState<SyncTab>('tap');
   const [gameData, setGameData] = useState<GameRouteResponse>(EMPTY_GAME);
   const [gameLoading, setGameLoading] = useState(false);
@@ -47,6 +48,9 @@ export default function Home() {
 
   useEffect(() => {
     fetchGame();
+    // Poll every 30 s so the play-by-play stays current during a live game.
+    const interval = setInterval(fetchGame, 30_000);
+    return () => clearInterval(interval);
   }, [fetchGame]);
 
   // ── Start radio ────────────────────────────────────────────────────────────
@@ -84,14 +88,16 @@ export default function Home() {
   const applySync = useCallback((offsetSeconds: number) => {
     engineRef.current?.applyOffset(offsetSeconds);
     setOffset(offsetSeconds);
+    setScrubberOffset(offsetSeconds);
     setAppState('synced');
   }, []);
 
-  // Fine-tune: adjust offset without leaving synced state
+  // Fine-tune: adjust offset without leaving synced state (nudge buttons)
   const adjustOffset = useCallback((newOffset: number) => {
     const clamped = Math.round(newOffset * 10) / 10; // snap to 0.1s
     engineRef.current?.applyOffset(clamped);
     setOffset(clamped);
+    setScrubberOffset(clamped);
   }, []);
 
   // ── Volume change ──────────────────────────────────────────────────────────
@@ -112,6 +118,7 @@ export default function Home() {
     // Keep radio playing, just reset to sync selection
     engineRef.current?.applyOffset(0);
     setOffset(null);
+    setScrubberOffset(0);
     setAppState('streaming');
   }, []);
 
@@ -241,26 +248,32 @@ export default function Home() {
       {appState === 'synced' && offset !== null && (
         <div className="w-full max-w-sm flex flex-col gap-5">
 
-          {/* Offset readout */}
+          {/* Scrubber target readout */}
           <div className="flex flex-col items-center gap-1">
             <span className="text-green-400 text-xs font-semibold tracking-widest uppercase">✓ Synced</span>
             <span className="text-white text-4xl font-mono font-bold tabular-nums">
-              {offset >= 0 ? '+' : ''}{offset.toFixed(1)}s
+              {scrubberOffset >= 0 ? '+' : ''}{scrubberOffset.toFixed(1)}s
             </span>
             <span className="text-slate-500 text-xs">
-              {offset >= 0 ? 'radio delay' : 'radio advanced'}
+              {scrubberOffset >= 0 ? 'radio delay' : 'radio advanced'}
             </span>
+            {/* Show currently applied value when scrubber has been moved */}
+            {Math.abs(scrubberOffset - offset) >= 0.05 && (
+              <span className="text-slate-600 text-xs mt-0.5">
+                playing {offset >= 0 ? '+' : ''}{offset.toFixed(1)}s
+              </span>
+            )}
           </div>
 
-          {/* Scrubber */}
+          {/* Scrubber — sets target, doesn't apply until JUMP */}
           <div className="flex flex-col gap-2">
             <input
               type="range"
               min={-120}
               max={120}
               step={0.1}
-              value={offset}
-              onChange={(e) => adjustOffset(parseFloat(e.target.value))}
+              value={scrubberOffset}
+              onChange={(e) => setScrubberOffset(parseFloat(e.target.value))}
               className="w-full h-2 rounded-full accent-green-500 cursor-pointer"
               aria-label="Sync offset"
             />
@@ -271,7 +284,20 @@ export default function Home() {
             </div>
           </div>
 
-          {/* ±0.1 / ±1 nudge buttons */}
+          {/* JUMP button — explicit apply */}
+          <button
+            onClick={() => applySync(scrubberOffset)}
+            className={`
+              w-full py-3.5 rounded-xl font-bold text-sm tracking-wider transition-all duration-150 active:scale-95
+              ${Math.abs(scrubberOffset - offset) >= 0.05
+                ? 'bg-green-600 hover:bg-green-500 text-white'
+                : 'border border-slate-700 text-slate-400 hover:bg-slate-700/30 hover:text-slate-200'}
+            `}
+          >
+            JUMP {scrubberOffset >= 0 ? '+' : ''}{scrubberOffset.toFixed(1)}s
+          </button>
+
+          {/* ±0.1 / ±1 nudge buttons — still apply immediately */}
           <div className="grid grid-cols-4 gap-2">
             {([-1, -0.1, 0.1, 1] as const).map((delta) => (
               <button
