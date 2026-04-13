@@ -85,6 +85,13 @@ export default function Home() {
     setAppState('synced');
   }, []);
 
+  // Fine-tune: adjust offset without leaving synced state
+  const adjustOffset = useCallback((newOffset: number) => {
+    const clamped = Math.round(newOffset * 10) / 10; // snap to 0.1s
+    engineRef.current?.applyOffset(clamped);
+    setOffset(clamped);
+  }, []);
+
   // ── Volume change ──────────────────────────────────────────────────────────
   const handleVolumeChange = useCallback((v: number) => {
     setVolume(v);
@@ -226,18 +233,53 @@ export default function Home() {
 
       {/* ── Synced ── */}
       {appState === 'synced' && offset !== null && (
-        <div className="w-full max-w-sm flex flex-col items-center gap-4">
-          <div className="flex flex-col items-center gap-2 px-6 py-5 rounded-2xl border border-green-700/50 bg-green-900/20 w-full">
-            <span className="text-green-400 text-lg">✓ Synced</span>
-            <span className="text-slate-300 text-sm">
-              {offset >= 0
-                ? <>Radio delayed by <span className="text-white font-semibold">{offset.toFixed(1)}s</span></>
-                : <>Radio advanced by <span className="text-white font-semibold">{Math.abs(offset).toFixed(1)}s</span></>
-              }
+        <div className="w-full max-w-sm flex flex-col gap-5">
+
+          {/* Offset readout */}
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-green-400 text-xs font-semibold tracking-widest uppercase">✓ Synced</span>
+            <span className="text-white text-4xl font-mono font-bold tabular-nums">
+              {offset >= 0 ? '+' : ''}{offset.toFixed(1)}s
+            </span>
+            <span className="text-slate-500 text-xs">
+              {offset >= 0 ? 'radio delay' : 'radio advanced'}
             </span>
           </div>
 
-          <div className="flex gap-3 w-full">
+          {/* Scrubber */}
+          <div className="flex flex-col gap-2">
+            <input
+              type="range"
+              min={-30}
+              max={120}
+              step={0.1}
+              value={offset}
+              onChange={(e) => adjustOffset(parseFloat(e.target.value))}
+              className="w-full h-2 rounded-full accent-green-500 cursor-pointer"
+              aria-label="Sync offset"
+            />
+            <div className="flex justify-between text-xs text-slate-600">
+              <span>−30s</span>
+              <span>0</span>
+              <span>+120s</span>
+            </div>
+          </div>
+
+          {/* ±0.1 / ±1 nudge buttons */}
+          <div className="grid grid-cols-4 gap-2">
+            {([-1, -0.1, 0.1, 1] as const).map((delta) => (
+              <button
+                key={delta}
+                onClick={() => adjustOffset(offset + delta)}
+                className="py-2 rounded-lg border border-slate-700 text-slate-300 text-xs font-mono hover:bg-slate-700/50 active:scale-95 transition-all"
+              >
+                {delta > 0 ? '+' : ''}{delta.toFixed(delta % 1 === 0 ? 0 : 1)}s
+              </button>
+            ))}
+          </div>
+
+          {/* Re-sync actions */}
+          <div className="flex gap-3">
             <button
               onClick={handleResync}
               className="flex-1 py-2.5 rounded-xl border border-slate-600 text-slate-300 text-sm font-medium hover:text-white hover:border-slate-400 transition-colors"
@@ -248,7 +290,7 @@ export default function Home() {
               onClick={() => { handleResync(); setSyncTab('tap'); }}
               className="flex-1 py-2.5 rounded-xl border border-sky-700 text-sky-400 text-sm font-medium hover:bg-sky-900/20 transition-colors"
             >
-              Fine-tune (Tap)
+              Tap Sync
             </button>
           </div>
         </div>

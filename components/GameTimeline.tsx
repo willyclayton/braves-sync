@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import type { PlaySummary, GameRouteResponse } from '@/app/types';
+import type { PlaySummary, PitchSummary, GameRouteResponse } from '@/app/types';
 
 interface Props {
   game: GameRouteResponse;
@@ -13,29 +13,28 @@ const ORDINALS: Record<number, string> = {
   6: '6th', 7: '7th', 8: '8th', 9: '9th', 10: '10th',
   11: '11th', 12: '12th',
 };
-
-function ordinal(n: number) {
-  return ORDINALS[n] ?? `${n}th`;
-}
+function ordinal(n: number) { return ORDINALS[n] ?? `${n}th`; }
 
 function formatTime(iso: string): string {
   if (!iso) return '';
   try {
     return new Date(iso).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/New_York',
+      hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
     });
-  } catch {
-    return '';
-  }
+  } catch { return ''; }
 }
 
-function scoringIcon(play: PlaySummary): string {
-  if (play.result.includes('Home Run')) return '💥';
-  if (play.isScoringPlay) return '🏃';
-  return '';
+function pitchDotColor(p: PitchSummary): string {
+  if (p.isInPlay) return 'bg-yellow-400';
+  if (p.isStrike) return 'bg-red-400';
+  if (p.isBall)   return 'bg-green-400';
+  return 'bg-slate-500';
 }
+
+
+type Selection =
+  | { type: 'play'; play: PlaySummary }
+  | { type: 'pitch'; play: PlaySummary; pitch: PitchSummary };
 
 interface InningGroup {
   key: string;
@@ -46,17 +45,13 @@ interface InningGroup {
 }
 
 export default function GameTimeline({ game, onSync }: Props) {
-  const [selected, setSelected] = useState<PlaySummary | null>(null);
-  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => {
-    // Default: expand the most recent 2 inning halves
-    return new Set();
-  });
+  const [selected, setSelected] = useState<Selection | null>(null);
+  const [expandedPlays, setExpandedPlays] = useState<Set<number>>(new Set());
+  const [expandedInnings, setExpandedInnings] = useState<Set<string>>(new Set());
 
   const groups: InningGroup[] = useMemo(() => {
-    // Show last 3 innings worth of plays
     const minInning = Math.max(1, game.currentInning - 2);
     const filtered = game.plays.filter((p) => p.inning >= minInning);
-
     const map = new Map<string, InningGroup>();
     for (const play of filtered) {
       const key = `${play.inning}-${play.halfInning}`;
@@ -71,41 +66,48 @@ export default function GameTimeline({ game, onSync }: Props) {
       }
       map.get(key)!.plays.push(play);
     }
-
-    // Sort: most recent inning-half first
     return Array.from(map.values()).sort((a, b) => {
       if (b.inning !== a.inning) return b.inning - a.inning;
-      return a.halfInning === 'top' ? 1 : -1; // bottom before top within same inning
+      return a.halfInning === 'top' ? 1 : -1;
     });
   }, [game.plays, game.currentInning]);
 
-  // Auto-expand the first (most recent) group
+  // Auto-expand the most recent inning group
   const firstKey = groups[0]?.key;
-  const effectiveExpanded = useMemo(() => {
-    if (expandedKeys.size > 0) return expandedKeys;
-    return new Set(firstKey ? [firstKey] : []);
-  }, [expandedKeys, firstKey]);
+  const effectiveInnings = useMemo(
+    () => expandedInnings.size > 0 ? expandedInnings : new Set(firstKey ? [firstKey] : []),
+    [expandedInnings, firstKey],
+  );
 
   function toggleInning(key: string) {
-    setExpandedKeys((prev) => {
+    setExpandedInnings((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   }
 
-  function handleSelect(play: PlaySummary) {
-    setSelected(play);
+  function togglePlay(idx: number) {
+    setExpandedPlays((prev) => {
+      const next = new Set(prev);
+      next.has(idx) ? next.delete(idx) : next.add(idx);
+      return next;
+    });
   }
 
   function handleApply() {
-    if (!selected || !selected.startTime) return;
-    const playTime = Date.parse(selected.startTime);
-    if (isNaN(playTime)) return;
-    const tvDelaySeconds = (Date.now() - playTime) / 1000;
-    onSync(tvDelaySeconds);
+    if (!selected) return;
+    const iso = selected.type === 'pitch' ? selected.pitch.startTime : selected.play.startTime;
+    const t = Date.parse(iso);
+    if (isNaN(t)) return;
+    onSync((Date.now() - t) / 1000);
   }
+
+  const selectedLabel = selected
+    ? selected.type === 'pitch'
+      ? `${selected.play.batter} — Pitch ${selected.pitch.pitchNumber} (${selected.pitch.balls}-${selected.pitch.strikes})`
+      : `${selected.play.batter} — ${selected.play.result}`
+    : null;
 
   if (game.gameState === 'NoGame' || game.gameState === 'Preview') {
     return (
@@ -116,30 +118,25 @@ export default function GameTimeline({ game, onSync }: Props) {
       </div>
     );
   }
-
   if (game.plays.length === 0) {
-    return (
-      <div className="text-center py-8 text-slate-500 text-sm">
-        Play data unavailable. Try Tap Sync.
-      </div>
-    );
+    return <div className="text-center py-8 text-slate-500 text-sm">Play data unavailable. Try Tap Sync.</div>;
   }
 
   return (
     <div className="w-full flex flex-col gap-4">
       <p className="text-slate-400 text-sm text-center">
-        Tap the play currently visible on TV.
+        Tap a play — or expand it to sync to a specific pitch.
       </p>
 
-      <div className="flex flex-col gap-1 max-h-72 overflow-y-auto rounded-xl border border-slate-700 divide-y divide-slate-800">
+      <div className="flex flex-col max-h-80 overflow-y-auto rounded-xl border border-slate-700 divide-y divide-slate-800/60">
         {groups.map((group) => {
-          const isOpen = effectiveExpanded.has(group.key);
+          const isOpen = effectiveInnings.has(group.key);
           return (
             <div key={group.key}>
               {/* Inning header */}
               <button
                 onClick={() => toggleInning(group.key)}
-                className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-800/80 hover:bg-slate-700/80 transition-colors text-left"
+                className="w-full flex items-center justify-between px-4 py-2 bg-slate-800 hover:bg-slate-700/80 transition-colors"
               >
                 <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
                   {group.label}
@@ -147,68 +144,135 @@ export default function GameTimeline({ game, onSync }: Props) {
                 <span className="text-slate-500 text-xs">{isOpen ? '▲' : '▼'}</span>
               </button>
 
-              {/* Plays */}
-              {isOpen &&
-                group.plays.map((play) => {
-                  const isSelected = selected?.atBatIndex === play.atBatIndex;
-                  return (
-                    <button
-                      key={play.atBatIndex}
-                      onClick={() => handleSelect(play)}
-                      className={`
-                        w-full text-left px-4 py-3 flex items-start gap-3
-                        transition-colors
-                        ${isSelected
-                          ? 'bg-sky-900/40 border-l-2 border-sky-400'
-                          : 'hover:bg-slate-700/30 border-l-2 border-transparent'}
-                      `}
-                    >
-                      <div className="w-5 flex-shrink-0 text-center">
-                        {isSelected
-                          ? <span className="text-sky-400 text-sm">✓</span>
-                          : <span className="text-base">{scoringIcon(play)}</span>
-                        }
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-baseline gap-2">
-                          <span className={`text-sm font-semibold ${isSelected ? 'text-sky-300' : 'text-slate-200'}`}>
-                            {play.batter}
-                          </span>
-                          <span className={`text-xs ${play.isScoringPlay ? 'text-yellow-400' : 'text-slate-400'}`}>
-                            {play.result}
-                          </span>
+              {isOpen && group.plays.map((play) => {
+                const isPlaySelected = selected?.type === 'play' && selected.play.atBatIndex === play.atBatIndex;
+                const isExpanded = expandedPlays.has(play.atBatIndex);
+                const hasPitches = play.pitches.length > 0;
+
+                return (
+                  <div key={play.atBatIndex}>
+                    {/* Play row */}
+                    <div className="flex items-stretch">
+                      {/* Select play button */}
+                      <button
+                        onClick={() => setSelected({ type: 'play', play })}
+                        className={`
+                          flex-1 text-left px-4 py-2.5 flex items-start gap-2.5
+                          border-l-2 transition-colors
+                          ${isPlaySelected
+                            ? 'border-sky-400 bg-sky-900/30'
+                            : 'border-transparent hover:bg-slate-700/30'}
+                        `}
+                      >
+                        <span className="w-4 flex-shrink-0 mt-0.5 text-center text-xs">
+                          {isPlaySelected ? <span className="text-sky-400">✓</span> : (play.isScoringPlay ? '🏃' : '')}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline gap-2 flex-wrap">
+                            <span className={`text-sm font-semibold ${isPlaySelected ? 'text-sky-300' : 'text-slate-200'}`}>
+                              {play.batter}
+                            </span>
+                            <span className={`text-xs ${play.isScoringPlay ? 'text-yellow-400' : 'text-slate-400'}`}>
+                              {play.result}
+                            </span>
+                            {play.pitches.length > 0 && (
+                              <span className="text-xs text-slate-600">
+                                {play.pitches.length}p
+                              </span>
+                            )}
+                          </div>
+                          {/* Pitch count dots */}
+                          {play.pitches.length > 0 && (
+                            <div className="flex gap-1 mt-1.5 flex-wrap">
+                              {play.pitches.map((p) => (
+                                <span
+                                  key={p.pitchNumber}
+                                  title={p.description}
+                                  className={`inline-block w-2 h-2 rounded-full ${pitchDotColor(p)}`}
+                                />
+                              ))}
+                            </div>
+                          )}
                         </div>
-                        <div className="text-xs text-slate-500 mt-0.5 truncate">
-                          {play.description}
-                        </div>
-                      </div>
-                      <span className="text-xs text-slate-600 flex-shrink-0 mt-0.5">
-                        {formatTime(play.startTime)}
-                      </span>
-                    </button>
-                  );
-                })}
+                        <span className="text-xs text-slate-600 flex-shrink-0 mt-0.5">
+                          {formatTime(play.startTime)}
+                        </span>
+                      </button>
+
+                      {/* Expand pitches toggle */}
+                      {hasPitches && (
+                        <button
+                          onClick={() => togglePlay(play.atBatIndex)}
+                          className="px-3 flex items-center text-slate-600 hover:text-slate-300 transition-colors border-l border-slate-800/60"
+                          title={isExpanded ? 'Hide pitches' : 'Show pitches'}
+                        >
+                          <span className="text-xs">{isExpanded ? '▲' : '▼'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Pitch list */}
+                    {isExpanded && play.pitches.map((pitch) => {
+                      const isPitchSelected =
+                        selected?.type === 'pitch' &&
+                        selected.play.atBatIndex === play.atBatIndex &&
+                        selected.pitch.pitchNumber === pitch.pitchNumber;
+
+                      return (
+                        <button
+                          key={pitch.pitchNumber}
+                          onClick={() => setSelected({ type: 'pitch', play, pitch })}
+                          className={`
+                            w-full text-left pl-10 pr-4 py-2 flex items-center gap-3
+                            border-l-2 transition-colors
+                            ${isPitchSelected
+                              ? 'border-sky-400 bg-sky-900/20'
+                              : 'border-transparent hover:bg-slate-700/20'}
+                          `}
+                        >
+                          {/* Pitch dot */}
+                          <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${pitchDotColor(pitch)}`} />
+
+                          {/* Pitch label: P3 · 1-2 · Called Strike */}
+                          <span className="text-xs text-slate-500 flex-shrink-0 tabular-nums w-5">
+                            P{pitch.pitchNumber}
+                          </span>
+                          <span className={`text-xs font-mono flex-shrink-0 tabular-nums ${
+                            isPitchSelected ? 'text-sky-300' : 'text-slate-400'
+                          }`}>
+                            {pitch.balls}-{pitch.strikes}
+                          </span>
+                          <span className={`text-xs flex-1 truncate ${
+                            isPitchSelected ? 'text-sky-200' : 'text-slate-400'
+                          }`}>
+                            {pitch.description}
+                          </span>
+                          <span className="text-xs text-slate-700 flex-shrink-0">
+                            {formatTime(pitch.startTime)}
+                          </span>
+                          {isPitchSelected && <span className="text-sky-400 text-xs flex-shrink-0">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
       </div>
 
       {selected && (
-        <div className="flex flex-col gap-3">
-          <div className="text-center text-sm text-slate-400">
-            <span className="text-white">{selected.batter}</span> — {selected.result}
-            {selected.startTime && (
-              <span className="text-slate-500 ml-2">{formatTime(selected.startTime)}</span>
-            )}
-          </div>
+        <div className="flex flex-col gap-2">
+          <p className="text-center text-xs text-slate-400 truncate px-2">{selectedLabel}</p>
           <button
             onClick={handleApply}
             className="w-full bg-green-600 hover:bg-green-500 active:scale-95 text-white font-bold text-sm tracking-wider py-3 rounded-xl transition-all duration-150"
           >
-            SYNC TO THIS PLAY
+            SYNC TO THIS {selected.type === 'pitch' ? 'PITCH' : 'PLAY'}
           </button>
           <p className="text-center text-xs text-slate-600">
-            Approximate sync — fine-tune with Tap Sync if needed
+            Approximate — fine-tune with the scrubber or Tap Sync
           </p>
         </div>
       )}

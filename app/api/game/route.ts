@@ -5,7 +5,7 @@
  * MLB games are scheduled in Eastern Time, so we use ET for the date query.
  */
 
-import type { GameRouteResponse, PlaySummary } from '@/app/types';
+import type { GameRouteResponse, PlaySummary, PitchSummary } from '@/app/types';
 
 export const runtime = 'edge';
 
@@ -96,6 +96,19 @@ export async function GET(): Promise<Response> {
                 homeScore: p.result?.homeScore ?? 0,
                 isComplete: true,
                 isScoringPlay: p.about?.isScoringPlay ?? false,
+                pitches: (p.playEvents ?? [])
+                  .filter((e: any) => e.isPitch === true)
+                  .map((e: any): PitchSummary => ({
+                    pitchNumber: e.pitchNumber ?? 0,
+                    balls: e.count?.balls ?? 0,
+                    strikes: e.count?.strikes ?? 0,
+                    outs: e.count?.outs ?? 0,
+                    description: e.details?.description ?? '',
+                    startTime: e.startTime ?? '',
+                    isStrike: e.details?.isStrike ?? false,
+                    isBall: e.details?.isBall ?? false,
+                    isInPlay: e.details?.isInPlay ?? false,
+                  })),
               }),
             );
         }

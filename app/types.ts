@@ -7,6 +7,18 @@ export type AppState =
   | 'synced'        // synced with offset applied
   | 'error';        // error
 
+export interface PitchSummary {
+  pitchNumber: number;
+  balls: number;      // count AFTER this pitch
+  strikes: number;    // count AFTER this pitch
+  outs: number;
+  description: string; // "Ball", "Called Strike", "Foul", "In play, run(s)", etc.
+  startTime: string;  // ISO 8601
+  isStrike: boolean;
+  isBall: boolean;
+  isInPlay: boolean;
+}
+
 export interface PlaySummary {
   atBatIndex: number;
   inning: number;
@@ -21,6 +33,7 @@ export interface PlaySummary {
   homeScore: number;
   isComplete: boolean;
   isScoringPlay: boolean;
+  pitches: PitchSummary[];
 }
 
 export interface GameRouteResponse {
