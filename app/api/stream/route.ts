@@ -1,5 +1,5 @@
 /**
- * /api/stream — Proxy for the 680 the Fan (WABO) audio stream.
+ * /api/stream — Proxy for the 680 the Fan (WCNN) audio stream.
  *
  * Why: iHeartRadio / StreamTheWorld streams don't send CORS headers,
  * so the browser's Web Audio API cannot tap into audio played directly
@@ -11,17 +11,19 @@
  * unlike the 10 s serverless function limit).
  *
  * Stream discovery order:
- *  1. WABORAMAAC (AAC, iHeartRadio / StreamTheWorld)
- *  2. WABOFMAAC  (alternate codec variant)
- *  3. WABORAM    (MP3 fallback)
+ *  1. WCNNAMAAC (AAC, iHeartRadio / StreamTheWorld — station rebranded WABO→WCNN)
+ *  2. WCNNFMAAC  (alternate codec variant)
+ *  3. WCNNAM     (MP3 fallback)
+ *  4. TuneIn CDN MP3 (last resort)
  */
 
 export const runtime = 'edge';
 
 const STREAM_CANDIDATES = [
-  'https://playerservices.streamtheworld.com/api/livestream-redirect/WABORAMAAC',
-  'https://playerservices.streamtheworld.com/api/livestream-redirect/WABOFMAAC',
-  'https://playerservices.streamtheworld.com/api/livestream-redirect/WABORAM',
+  'https://playerservices.streamtheworld.com/api/livestream-redirect/WCNNAMAAC.aac',
+  'https://playerservices.streamtheworld.com/api/livestream-redirect/WCNNFMAAC.aac',
+  'https://playerservices.streamtheworld.com/api/livestream-redirect/WCNNAM.mp3',
+  'https://tunein.cdnstream1.com/4066_96.mp3',
 ];
 
 export async function GET() {

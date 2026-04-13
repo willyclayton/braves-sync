@@ -107,6 +107,13 @@ export default function Home() {
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     micStreamRef.current = null;
     audioRef.current?.pause();
+    audioRef.current = null;
+    // Close the AudioContext so createMediaElementSource can be called fresh on retry
+    ctxRef.current?.close().catch(() => {});
+    ctxRef.current = null;
+    gainRef.current = null;
+    radioBufferRef.current = null;
+    micBufferRef.current = null;
   }, []);
 
   // ─── Start buffering ───────────────────────────────────────────────────────
@@ -115,21 +122,20 @@ export default function Home() {
     setBufferProgress(0);
 
     try {
-      // Resume / create AudioContext (requires user gesture)
-      let ctx = ctxRef.current;
-      if (!ctx) {
-        ctx = new AudioContext();
-        ctxRef.current = ctx;
-      }
+      // Always create a fresh AudioContext and Audio element.
+      // createMediaElementSource() can only be called once per <audio> element,
+      // so we must use a new element on every attempt.
+      const ctx = new AudioContext();
+      ctxRef.current = ctx;
       await ctx.resume();
 
       // ── Radio audio graph ──────────────────────────────────────────────────
-      const audio = audioRef.current!;
-      // crossOrigin must be set BEFORE src is assigned to avoid CORS tainting
+      const audio = new Audio();
       audio.crossOrigin = 'anonymous';
       audio.src = '/api/stream';
       audio.setAttribute('playsinline', '');
       audio.preload = 'none';
+      audioRef.current = audio;
 
       const source = ctx.createMediaElementSource(audio);
 
@@ -145,7 +151,13 @@ export default function Home() {
       radioBuffer.outputNode.connect(gain);
       gain.connect(ctx.destination);
 
-      await audio.play();
+      // Verify the stream is actually reachable before committing
+      try {
+        await audio.play();
+      } catch (playErr) {
+        console.error('[SyncCast] stream play error', playErr);
+        throw new Error('StreamError');
+      }
 
       // ── Mic audio graph ────────────────────────────────────────────────────
       const micStream = await navigator.mediaDevices.getUserMedia({
@@ -187,6 +199,8 @@ export default function Home() {
       teardown();
       if (err instanceof Error && err.name === 'NotAllowedError') {
         setErrorMsg('Microphone access denied. Please allow mic access and try again.');
+      } else if (err instanceof Error && err.message === 'StreamError') {
+        setErrorMsg('Radio stream unavailable. The game may not be on or the stream URL has changed.');
       } else {
         setErrorMsg('Failed to start. Check your internet connection and try again.');
       }
