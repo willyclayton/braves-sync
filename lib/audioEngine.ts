@@ -13,9 +13,11 @@
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private audio: HTMLAudioElement | null = null;
+  private source: MediaElementAudioSourceNode | null = null;
   private delayNode: DelayNode | null = null;
   private gainNode: GainNode | null = null;
   private analyserNode: AnalyserNode | null = null;
+  private transcriptionDest: MediaStreamAudioDestinationNode | null = null;
   private samplingInterval: ReturnType<typeof setInterval> | null = null;
   private transientBuffer: Array<{ time: number; peak: number }> = [];
   private currentOffset = 0;
@@ -39,6 +41,7 @@ export class AudioEngine {
 
     // Build the audio graph before calling play() so routing is in place.
     const source = ctx.createMediaElementSource(audio);
+    this.source = source;
 
     // 120-second max delay (spec: must be strictly less than 180).
     const delayNode = ctx.createDelay(120);
@@ -167,12 +170,28 @@ export class AudioEngine {
     return candidates[0].time;
   }
 
+  /**
+   * Returns a MediaStream tapped directly from the radio source node (before delay).
+   * Used by CountMatchSync to record audio chunks for transcription.
+   * Lazily creates the MediaStreamDestinationNode on first call.
+   */
+  createTranscriptionStream(): MediaStream | null {
+    if (!this.ctx || !this.source) return null;
+    if (!this.transcriptionDest) {
+      this.transcriptionDest = this.ctx.createMediaStreamDestination();
+      this.source.connect(this.transcriptionDest);
+    }
+    return this.transcriptionDest.stream;
+  }
+
   teardown(): void {
     if (this.samplingInterval !== null) {
       clearInterval(this.samplingInterval);
       this.samplingInterval = null;
     }
     this.analyserNode = null;
+    this.transcriptionDest = null;
+    this.source = null;
     this.transientBuffer = [];
     this.audio?.pause();
     this.audio = null;

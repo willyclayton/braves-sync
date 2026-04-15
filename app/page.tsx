@@ -5,10 +5,11 @@ import VolumeSlider from '@/components/VolumeSlider';
 import TapSync from '@/components/TapSync';
 import GameTimeline from '@/components/GameTimeline';
 import PitchSync from '@/components/PitchSync';
+import CountMatchSync from '@/components/CountMatchSync';
 import { AudioEngine } from '@/lib/audioEngine';
 import type { AppState, GameRouteResponse, PlaySummary, PitchSummary } from './types';
 
-type SyncTab = 'tap' | 'timeline';
+type SyncTab = 'tap' | 'timeline' | 'count-match';
 
 const EMPTY_GAME: GameRouteResponse = {
   gamePk: null,
@@ -228,6 +229,19 @@ export default function Home() {
             >
               Game Timeline
             </button>
+            <button
+              onClick={() => {
+                setSyncTab('count-match');
+                if (gameData.plays.length === 0 && gameData.gameState !== 'NoGame') fetchGame();
+              }}
+              className={`flex-1 py-2.5 text-xs font-bold tracking-wider uppercase transition-colors ${
+                syncTab === 'count-match'
+                  ? 'bg-slate-700 text-white'
+                  : 'bg-slate-800/40 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              Count Match
+            </button>
           </div>
 
           {/* Tab content */}
@@ -240,6 +254,9 @@ export default function Home() {
                   onSync={applySync}
                   onPitchSync={(play, pitch) => setPitchSyncTarget({ play, pitch })}
                 />
+          )}
+          {syncTab === 'count-match' && (
+            <CountMatchSync game={gameData} engineRef={engineRef} onSync={applySync} />
           )}
         </div>
       )}
